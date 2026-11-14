@@ -20,6 +20,11 @@ kept here in `types/`. To read one running from source:
 
     claude --plugin-dir mods/diff
 
+The opt-in [`context-memory`](context-memory) plugin adds session checkpoints,
+bounded text history retrieval, a context usage tool and `/context-handoff`.
+It is a local extension, not one of the bundled mods above; see its README for
+the experimental function-hook requirement, storage limits and test commands.
+
 ## Testing
 
 A mod's tests are in its `tests/` folder, and run with
