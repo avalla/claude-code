@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "arm": "B",
+  "platform": "macOS-26.5-arm64-arm-64bit",
+  "command": [
+    "npx",
+    "--yes",
+    "--package",
+    "@anthropic-ai/claude-code@2.1.325",
+    "claude",
+    "plugin",
+    "test",
+    "mods/context-memory"
+  ],
+  "runs": [
+    {
+      "replica": 0,
+      "seconds": 1.0646425829909276,
+      "exitCode": 0
+    },
+    {
+      "replica": 1,
+      "seconds": 0.8975736669963226,
+      "exitCode": 0
+    },
+    {
+      "replica": 2,
+      "seconds": 0.7913443330035079,
+      "exitCode": 0
+    }
+  ],
+  "childMaxRssRaw": 257277952,
+  "rssUnit": "bytes",
+  "rssScope": "child process high-water mark including npx; not isolated hook memory",
+  "tokens": null,
+  "costUsd": null,
+  "liveStatus": "not run: live budget unset",
+  "note": "Suite latency includes startup; B and C suites differ. No token or live continuity claims."
+}

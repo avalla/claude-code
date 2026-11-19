@@ -5,11 +5,13 @@ import { bytes, textOf } from '../hooks/register'
 tier('user')
 const DIR = '/config/context-memory/main'
 
-function world(on: On, files = new Map<string, string>(), failWrites = false) {
+function world(on: On, files = new Map<string, string>(), failWrites = false, onRead = () => {}) {
   mock.env(on, { CLAUDE_CONFIG_DIR: '/config' })
   on('session.id', () => ({ value: 'main' }))
   on('fs.exists', ($, e) => ({ value: files.has(e.path) || [...files.keys()].some(p => p.startsWith(e.path + '/')) }))
+  on('fs.stat', ($, e) => ({ value: { kind: files.has(e.path) ? 'file' : 'dir', size: bytes(files.get(e.path) ?? ''), mtimeMs: 0, isLink: false } }))
   on('fs.read', ($, e) => {
+    onRead()
     const value = files.get(e.path)
     if (value === undefined) throw new Error('ENOENT')
     return { value }
@@ -97,10 +99,11 @@ describe('register', () => {
     on('session.start', ($, e) => ({ cwd: e.cwd }))
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     expect(tools).toEqual(['context_notes', 'context_history', 'context_usage'])
-    expect(commands).toEqual(['context-handoff'])
+    expect(commands).toEqual(['context-handoff', 'context-import', 'context-pin'])
   })
 
   test('reminds at 75 percent while preserving the submitted prompt', async ($, on) => {
+    world(on)
     on('session.usage', () => ({ value: { startedAt: 0, context: { window: 100, percent: 75 }, rateLimits: [] } }))
     on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
     const result = await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' }, wait: false, context: ['keep'] })
@@ -110,6 +113,7 @@ describe('register', () => {
   })
 
   test('uses a local summary for the context meter', async ($, on) => {
+    world(on)
     on('session.usage', ($, e) => {
       expect(e.breakdown).toEqual('summary')
       return { value: { startedAt: 0, context: { window: 200000, percent: 25 }, rateLimits: [] } }
@@ -150,4 +154,107 @@ describe('register', () => {
     files.set(path, JSON.stringify({ text: 'x'.repeat(32769) }))
     expect((await $.tool.call({ tool, id: '000000000001' })).deny).toContain('Invalid or oversized')
   })
+  test('deduplicates thresholds across concurrent tools and prompts', async ($, on) => {
+    world(on)
+    let percent = 75
+    on('session.usage', () => ({ value: { startedAt: 0, context: { window: 100, percent }, rateLimits: [] } }))
+    on('tool.call', () => ({ result: 'original', context: ['keep'], ref: 7 }))
+    const results = await Promise.all([$.tool.call({ tool: 'example' }), $.tool.call({ tool: 'example' })])
+    expect(results.filter(r => r.context?.length === 2).length).toEqual(1)
+    expect(results[0]?.result).toEqual('original')
+    expect(results[0]?.ref).toEqual(7)
+    percent = 90
+    expect((await $.tool.call({ tool: 'example' })).context?.length).toEqual(2)
+    expect((await $.tool.call({ tool: 'example' })).context?.length).toEqual(1)
+  })
+
+  test('round trips long text with surrogate-safe pages and bounded block reads', async ($, on) => {
+    const files = world(on)
+    mock.session(on)
+    const original = 'a'.repeat(11999) + '😀' + 'b'.repeat(90000) + 'TAIL'
+    await $.session.append({ door: 'note', origin: { kind: 'composer' }, uuid: 'long', message: { type: 'user', content: [{ type: 'text', text: original }] } })
+    let offset: number | null = 0
+    let rebuilt = ''
+    while (offset !== null) {
+      const result = await $.tool.call({ tool: 'mcp__context-memory__context_history', id: '000000000001', view: 'full', offset })
+      const page = result.result as { text: string, nextOffset: number | null }
+      expect(page.text.length <= 12000).toEqual(true)
+      rebuilt += page.text
+      offset = page.nextOffset
+    }
+    expect(rebuilt).toEqual(original)
+    expect((await $.tool.call({ tool: 'mcp__context-memory__context_history', id: '000000000001', view: 'full', offset: 12000 })).deny).toContain('surrogate')
+    files.delete(DIR + '/history-text/000000000001/000000000000.txt')
+    expect((await $.tool.call({ tool: 'mcp__context-memory__context_history', id: '000000000001', view: 'full' })).deny !== undefined).toEqual(true)
+  })
+
+  test('snapshots before compaction and preserves original instructions and messages', async ($, on) => {
+    const files = world(on, new Map([[`${DIR}/notes.txt`, 'saved decision']]))
+    on('session.compact', ($, e) => {
+      expect(e.instructions).toContain('original')
+      expect(e.instructions).toContain('saved decision')
+      return { messages: e.messages }
+    })
+    await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'continue', toolUses: [] }], instructions: 'original' })
+    expect([...files.keys()].some(k => k.includes('/checkpoints/'))).toEqual(true)
+  })
+
+  test('exports immutable checkpoints and imports only with explicit flags', async ($, on) => {
+    const files = world(on, new Map([[`${DIR}/notes.txt`, 'source checkpoint']]))
+    on('session.cwd', () => ({ value: '/project' }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    const input = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 100 } }
+    const exported = await $.command.run({ ...input, command: 'context-handoff', args: '--export' })
+    const ref = exported.text!.split(': ').pop()!
+    files.set(`${DIR}/notes.txt`, 'destination')
+    const preview = await $.command.run({ ...input, command: 'context-import', args: ref })
+    expect(preview.text).toContain('source checkpoint')
+    expect(files.get(`${DIR}/notes.txt`)).toEqual('destination')
+    expect((await $.command.run({ ...input, command: 'context-import', args: ref + ' --apply' })).exitCode).toEqual(1)
+    const applied = await $.command.run({ ...input, command: 'context-import', args: ref + ' --apply --replace' })
+    expect(applied.exitCode).toEqual(undefined)
+    expect(files.get(`${DIR}/notes.txt`)).toEqual('source checkpoint')
+  })
+
+  test('scales search to 100 reads at 1000 and 10000 records', async ($, on) => {
+    let reads = 0
+    const files = world(on, new Map(), false, () => { reads++ })
+    for (const count of [1000, 10000]) {
+      files.clear()
+      for (let i = 1; i <= count; i++) {
+        const id = String(i).padStart(12, '0')
+        files.set(`${DIR}/history/${id}.json`, JSON.stringify({ id, text: 'no match' }))
+      }
+      for (let n = 0; n < 100; n++) {
+        reads = 0
+        await $.tool.call({ tool: 'mcp__context-memory__context_history', query: 'absent' })
+        expect(reads).toEqual(100)
+      }
+    }
+  })
+
+  test('rejects corrupt full metadata and preserves legacy availability', async ($, on) => {
+    const path = `${DIR}/history/000000000001.json`
+    const files = world(on, new Map([[path, JSON.stringify({ id: '000000000001', text: 'old', truncated: true })]]))
+    const input = { tool: 'mcp__context-memory__context_history', id: '000000000001', view: 'full' }
+    expect((await $.tool.call(input)).deny).toContain('legacy_truncated')
+    files.set(path, JSON.stringify({ id: '000000000001', text: 'short' }))
+    expect((await $.tool.call(input)).result).toEqual({ id: '000000000001', text: 'short', offset: 0, totalChars: 5, complete: true, nextOffset: null })
+    files.set(path, JSON.stringify({ id: '000000000001', text: 'short', fullText: { status: 'complete', totalChars: 10, chunks: [{ index: 0, offset: 1, length: 10 }] } }))
+    expect((await $.tool.call(input)).deny).toContain('Invalid chunks')
+  })
+
+  test('compaction precompute does not snapshot and skip does not reset warnings', async ($, on) => {
+    const files = world(on)
+    on('session.usage', () => ({ value: { startedAt: 0, context: { window: 100, percent: 75 }, rateLimits: [] } }))
+    on('tool.call', () => ({ result: 'ok' }))
+    on('session.compact', () => ({ skip: 'test skip' }))
+    expect((await $.tool.call({ tool: 'example' })).context?.length).toEqual(1)
+    const messages = [{ role: 'user' as const, text: 'continue', toolUses: [] }]
+    await $.session.compact({ trigger: 'precompute', messages })
+    expect(files.size).toEqual(0)
+    await $.session.compact({ trigger: 'manual', messages })
+    expect((await $.tool.call({ tool: 'example' })).context).toEqual(undefined)
+  })
+
 })

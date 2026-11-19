@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "cliVersion": "2.1.325",
+  "baselineCommit": "6288350",
+  "liveBudgetUsd": null,
+  "liveReplicas": 3,
+  "scenarios": ["short-session", "long-tool-chain", "compaction-ten-facts", "long-output-tail", "cross-session-handoff", "disk-failure", "local-scale-1000-10000"],
+  "arms": {"A": "no plugin", "B": "baseline plugin", "C": "current plugin"}
+}

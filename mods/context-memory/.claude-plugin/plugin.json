@@ -1,5 +1,5 @@
 {
   "name": "context-memory",
-  "version": "0.1.0",
-  "description": "Session checkpoints, bounded history retrieval and context usage through function hooks."
+  "version": "0.3.0",
+  "description": "Session checkpoints, user session pins, bounded history retrieval and context usage through function hooks."
 }
