@@ -8,7 +8,7 @@ The [implementation plan](IMPLEMENTATION-PLAN.md) (in Italian) describes five
 improvements, their dependencies, tests and acceptance criteria.
 
 For a short guide to running, installing and using the plugin, see the
-[quick start](docs/GUIDA-RAPIDA.md) (in Italian).
+[quick start](docs/QUICKSTART.md).
 
 ## Run
 
