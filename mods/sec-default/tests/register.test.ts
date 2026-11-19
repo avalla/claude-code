@@ -639,6 +639,10 @@ describe('register', () => {
           ).isHidden,
         ).toBe(false)
 
+        expect(await $.tool.offer({ tool: 'mcp__suite__x', provider })).toEqual({
+          isOffered: true,
+        })
+
         expect(
           await $.agent.offer(
             Fixtures.agentOffered('suite:reviewer', provider),
@@ -665,12 +669,116 @@ describe('register', () => {
           ).isHidden,
         ).toBe(true)
 
+        expect(await $.tool.offer({ tool: 'Read', provider })).toEqual({
+          isOffered: false,
+        })
+
         expect(
           await $.agent.offer(Fixtures.agentOffered('reviewer', provider)),
         ).toEqual({ isOffered: false })
 
         expect(await $.agent.spawn(Fixtures.agentSpawned(provider))).toEqual({
           model: 'user',
+        })
+      }
+    },
+  )
+
+  test(
+    "a person's plugin takes or rewrites the report of a person's agent, and of no organization's",
+    { plugins: [Fixtures.marking] },
+    async ($, on) => {
+      on('settings.read', () => ({ value: Fixtures.NO_ALLOWLIST }))
+      Fixtures.subjectsEchoed(on)
+
+      const report = { agentId: 'a1', subagentType: 'reviewer', text: 'said' }
+
+      for (const provider of Fixtures.ORG_PROVIDERS) {
+        for (const status of ['completed', 'failed'] as const) {
+          expect(await $.agent.report({ ...report, provider, status })).toEqual({
+            text: 'said',
+          })
+        }
+      }
+
+      for (const provider of Fixtures.USER_REACHABLE_PROVIDERS) {
+        expect(
+          await $.agent.report({ ...report, provider, status: 'completed' }),
+        ).toEqual({ consumed: 'user' })
+
+        expect(
+          await $.agent.report({ ...report, provider, status: 'failed' }),
+        ).toEqual({ text: 'user' })
+      }
+    },
+  )
+
+  test(
+    "a tool that policy names is offered over a person's plugin, and their own is still theirs to hide",
+    { plugins: [Fixtures.marking] },
+    async ($, on) => {
+      on('settings.read', () => ({ value: Fixtures.MANAGED_POLICY }))
+      Fixtures.subjectsEchoed(on)
+
+      for (const [tool, plugin, isOffered] of [
+        ['mcp__corp__search', 'mcp:corp', true],
+        ['mcp__suite__deploy', 'suite@corp-market', true],
+        ['mcp__plugin_suite_jira__create', 'suite@corp-market', true],
+        ['mcp__mine__search', 'mcp:mine', false],
+        ['mcp__corporate__search', 'mcp:corporate', false],
+      ] as const) {
+        expect(
+          await $.tool.offer({ tool, provider: { plugin, tier: 'user' } }),
+          tool,
+        ).toEqual({ isOffered })
+      }
+    },
+  )
+
+  test(
+    "with the server file unreadable every mcp__ tool is offered over a person's plugin",
+    { plugins: [Fixtures.marking] },
+    async ($, on) => {
+      on('settings.read', () => ({
+        value: { managedMcpServersUnreadable: true },
+      }))
+      Fixtures.subjectsEchoed(on)
+
+      expect(
+        await $.tool.offer({
+          tool: 'mcp__mine__search',
+          provider: { plugin: 'mcp:mine', tier: 'user' },
+        }),
+      ).toEqual({ isOffered: true })
+
+      expect(
+        await $.tool.offer({
+          tool: 'Read',
+          provider: { plugin: 'engine', tier: 'core' },
+        }),
+      ).toEqual({ isOffered: false })
+    },
+  )
+
+  test(
+    "with no policy to read every tool is offered over a person's plugin",
+    { plugins: [Fixtures.marking] },
+    async ($, on) => {
+      const stop = Fixtures.policyUntilStopped(
+        on,
+        Fixtures.NO_ALLOWLIST,
+        'unreadable',
+      )
+
+      Fixtures.subjectsEchoed(on)
+      await $.agent.offer(
+        Fixtures.agentOffered('reviewer', { plugin: 'engine', tier: 'core' }),
+      )
+      stop()
+
+      for (const provider of Fixtures.USER_REACHABLE_PROVIDERS) {
+        expect(await $.tool.offer({ tool: 'Read', provider })).toEqual({
+          isOffered: true,
         })
       }
     },
@@ -766,13 +874,15 @@ describe('register', () => {
     async ($, on) => {
       on('settings.read', () => ({ value: Fixtures.MANAGED_MODS_ONLY }))
 
+      const lines = Fixtures.logged(on)
       const registered = Fixtures.toolsRegistered(on)
 
       await expect($.session.start(Fixtures.SESSION)).rejects.toThrow(
-        Hooks.managedModsOnlyRefusal('mine'),
+        'mine: hooks module left out by sec-default',
       )
 
       expect(registered, 'no hook of it ever ran').toEqual([])
+      expect(lines).toEqual([`debug: ${Hooks.managedModsOnlyRefusal('mine')}`])
     },
   )
 
@@ -821,7 +931,7 @@ describe('register', () => {
       const registered = Fixtures.toolsRegistered(on)
 
       await expect($.session.start(Fixtures.SESSION)).rejects.toThrow(
-        Hooks.managedModsOnlyRefusal('suite'),
+        'suite: hooks module left out by sec-default',
       )
 
       expect(registered).toEqual([])
@@ -841,7 +951,7 @@ describe('register', () => {
       const registered = Fixtures.toolsRegistered(on)
 
       await expect($.session.start(Fixtures.SESSION)).rejects.toThrow(
-        Hooks.managedModsOnlyRefusal('mine'),
+        'mine: hooks module left out by sec-default',
       )
 
       expect(registered).toEqual([])
@@ -876,7 +986,7 @@ describe('register', () => {
       const registered = Fixtures.toolsRegistered(on)
 
       await expect($.session.start(Fixtures.SESSION)).rejects.toThrow(
-        Hooks.managedModsOnlyRefusal('mine'),
+        'mine: hooks module left out by sec-default',
       )
 
       expect({ registered, lines }).toEqual({
@@ -884,8 +994,87 @@ describe('register', () => {
         lines: [
           'debug: plugin.register hook failed judging mine (throw): ' +
             'sec-default: $.settings.read: managed settings unreadable',
+          `debug: ${Hooks.managedModsOnlyRefusal('mine')}`,
         ],
       })
+    },
+  )
+
+  for (const [kind, guard] of Fixtures.GUARDS) {
+    for (const [how, policy] of Fixtures.NAMING_GUARD) {
+      test(
+        `a person's mod cannot refuse a plugin ${kind} policy names: ${how}`,
+        { plugins: [Fixtures.refusingPlugins('mine'), guard] },
+        async ($, on) => {
+          on('settings.read', () => ({ value: policy }))
+          on('prompt.section', ($, e) => ({ text: e.text }))
+
+          expect(
+            await $.prompt.section(Fixtures.MEMORY),
+            'a call rejects where a plugin of the test was refused',
+          ).toEqual({ text: Fixtures.MEMORY.text })
+        },
+      )
+    }
+
+    for (const [how, policy] of Fixtures.NOT_NAMING_GUARD) {
+      test(
+        `a person's mod still refuses their own plugin ${kind}: ${how}`,
+        { plugins: [Fixtures.refusingPlugins('mine'), guard] },
+        async ($, on) => {
+          on('settings.read', () => ({ value: policy }))
+
+          await expect($.session.start(Fixtures.SESSION)).rejects.toThrow(
+            'refused by mine: no guard',
+          )
+        },
+      )
+    }
+
+    for (const seat of ['prepend', 'append'] as const) {
+      test(
+        `an organization's ${seat} judge still refuses its plugin ${kind}`,
+        { plugins: [Fixtures.refusingPlugins('screen', seat), guard] },
+        async ($, on) => {
+          on('settings.read', () => ({ value: Fixtures.ENABLING_GUARD }))
+
+          await expect($.session.start(Fixtures.SESSION)).rejects.toThrow(
+            'refused by screen: no guard',
+          )
+        },
+      )
+    }
+
+    test(
+      `a person's allow does not override an appended judge's refusal of an organization's plugin ${kind}`,
+      {
+        plugins: [
+          Fixtures.admittingPlugins,
+          guard,
+          Fixtures.refusingPlugins('screen', 'append'),
+        ],
+      },
+      async ($, on) => {
+        on('settings.read', () => ({ value: Fixtures.ENABLING_GUARD }))
+
+        await expect($.session.start(Fixtures.SESSION)).rejects.toThrow(
+          'refused by screen: no guard',
+        )
+      },
+    )
+  }
+
+  test(
+    'allowManagedModsOnly still keeps out a user-tier module policy names',
+    { plugins: [Fixtures.registering('guard')] },
+    async ($, on) => {
+      on('settings.read', () => ({
+        value: { ...Fixtures.ENABLING_GUARD, ...Fixtures.MANAGED_MODS_ONLY },
+      }))
+
+      await expect($.session.start(Fixtures.SESSION)).rejects.toThrow(
+        'guard: hooks module left out by sec-default',
+      )
     },
   )
 
@@ -1213,7 +1402,7 @@ describe('register', () => {
   )
 
   test(
-    "the mode's own ask, no rule or hook behind it, is theirs to allow",
+    "the mode's own ask, with no host, holds over their allow too",
     { plugins: [Fixtures.allowing('easy')] },
     async ($, on) => {
       on('settings.read', () => ({ value: Fixtures.MANAGED_POLICY }))
@@ -1222,8 +1411,36 @@ describe('register', () => {
 
       Fixtures.checksAnswered(on, Fixtures.ASKED)
 
+      expect(await $.tool.check(Fixtures.CHECKED)).toEqual(Fixtures.ASKED)
+
+      expect(lines).toEqual([
+        `transcript: ${Hooks.heldNotice('easy', Fixtures.CHECKED.tool, Fixtures.ASKED, 'lift')}`,
+      ])
+    },
+  )
+
+  test(
+    "the option lets them allow the mode's own ask",
+    { plugins: [Fixtures.allowing('easy')] },
+    async ($, on) => {
+      on('settings.read', () => ({ value: Fixtures.overridePolicyOf(true) }))
+      Fixtures.checksAnswered(on, Fixtures.ASKED)
+
       expect(await $.tool.check(Fixtures.CHECKED)).toEqual(Fixtures.ALLOWED)
-      expect(lines).toEqual([])
+    },
+  )
+
+  test(
+    "with no host, their ask over the mode's own ask stands",
+    { plugins: [Fixtures.asking('easy')] },
+    async ($, on) => {
+      on('settings.read', () => ({ value: Fixtures.MANAGED_POLICY }))
+      Fixtures.checksAnswered(on, { decision: 'ask' })
+
+      expect(await $.tool.check(Fixtures.CHECKED)).toEqual({
+        ...Fixtures.ASKED,
+        plugin: 'easy',
+      })
     },
   )
 
@@ -1530,6 +1747,77 @@ describe('register', () => {
   )
 
   test(
+    'on tool.judge a block holds over their allow, and they are named once',
+    { plugins: [Fixtures.judging('easy')] },
+    async ($, on) => {
+      on('settings.read', () => ({ value: Fixtures.MANAGED_POLICY }))
+      on('tool.judge', () => Fixtures.BLOCKED)
+
+      const lines = Fixtures.logged(on)
+
+      expect(await $.tool.judge(Fixtures.JUDGED)).toMatchObject(
+        Fixtures.BLOCKED,
+      )
+      await $.tool.judge(Fixtures.JUDGED)
+
+      expect(lines).toEqual([
+        `transcript: ${Hooks.heldNotice('easy', 'Bash', Fixtures.BLOCKED, 'lift')}`,
+      ])
+    },
+  )
+
+  test(
+    "on tool.judge an organization plugin's allow stands",
+    { plugins: [Fixtures.judging('suite', 'append'), Fixtures.judging('easy')] },
+    async ($, on) => {
+      on('settings.read', () => ({ value: Fixtures.MANAGED_POLICY }))
+      on('tool.judge', () => Fixtures.BLOCKED)
+
+      expect(await $.tool.judge(Fixtures.JUDGED)).toEqual({
+        decision: 'allow',
+        plugin: 'suite',
+      })
+    },
+  )
+
+  test(
+    'on tool.judge the same option lets them override',
+    { plugins: [Fixtures.judging('easy')] },
+    async ($, on) => {
+      on('settings.read', () => ({ value: Fixtures.overridePolicyOf(true) }))
+      on('tool.judge', () => Fixtures.BLOCKED)
+
+      expect(await $.tool.judge(Fixtures.JUDGED)).toEqual({
+        decision: 'allow',
+        plugin: 'easy',
+      })
+    },
+  )
+
+  test(
+    'on tool.judge an unreadable policy holds too',
+    { plugins: [Fixtures.judging('easy')] },
+    async ($, on) => {
+      const stopPolicy = Fixtures.policyUntilStopped(
+        on,
+        Fixtures.overridePolicyOf(true),
+        'managed settings unreadable',
+      )
+
+      Fixtures.logged(on)
+      on('tool.judge', () => Fixtures.BLOCKED)
+      on('prompt.section', ($, e) => ({ text: e.text }))
+
+      await $.prompt.section(Fixtures.MEMORY)
+      stopPolicy()
+
+      expect(await $.tool.judge(Fixtures.JUDGED)).toMatchObject(
+        Fixtures.BLOCKED,
+      )
+    },
+  )
+
+  test(
     'managed settings may let the plugins a person installs override',
     { plugins: [Fixtures.allowing('easy')] },
     async ($, on) => {
@@ -1726,6 +2014,32 @@ describe('register', () => {
         'guard read as the engine holds it',
         'mine read theirs',
         'suite read as the engine holds it',
+      ])
+    },
+  )
+
+  test(
+    "nor to refuse what an organization's plugin compiles",
+    {
+      plugins: [
+        Fixtures.refusingCompiles,
+        Fixtures.compiling('mine'),
+        Fixtures.compiling('suite', 'append'),
+        Fixtures.compiling('guard', 'prepend'),
+      ],
+    },
+    async ($, on) => {
+      on('settings.read', () => ({ value: Fixtures.PINNING_POLICY }))
+      on('session.start', ($, e) => ({ cwd: e.cwd }))
+
+      const lines = Fixtures.loggedBy(on)
+
+      await $.session.start(Fixtures.SESSION)
+
+      expect(lines.toSorted()).toEqual([
+        'guard compiled',
+        'mine refused',
+        'suite compiled',
       ])
     },
   )

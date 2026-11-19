@@ -1,8 +1,9 @@
 # privacy
 
 The context hands the model the signed-in account's address to identify the
-user. This mod keeps that address from going out as a client's identity. It
-holds one `tool.check` hook, which reads each tool as below. The address counts
+user. This mod keeps that address from going out as a client's identity, and
+says [who reads it](#who-reads-the-identity) through `$.session.identity()`. Its
+`tool.check` hook reads each tool as below. The address counts
 in any case or percent-encoded.
 
 - **Bash, PowerShell, Monitor:** the whole input, and the text of each script its
@@ -13,7 +14,8 @@ in any case or percent-encoded.
   doesn't, since carrying over a line the file already holds adds nothing.
 - **WebFetch:** the address in `url` is refused with no second word, since the URL
   is what goes out.
-- **`mcp__*`:** the whole input, keys included, by the same test.
+- **`mcp__*`:** the whole input, keys included, by the same test. A settings
+  `mcp_tool` hook's own call passes.
 
 A word that declares who is calling is one of:
 
@@ -32,8 +34,10 @@ A word that declares who is calling is one of:
 
 `COMPUTED_ADDRESS` counts as the address beside any of these words on its own line:
 `git config user.email` in its usual spellings, unless it is given a value to set,
-and `$GIT_AUTHOR_EMAIL` and `$GIT_COMMITTER_EMAIL`. The address itself counts with
-a word anywhere in the text.
+`$GIT_AUTHOR_EMAIL` and `$GIT_COMMITTER_EMAIL`, and the names of the two variables
+that can hold the address in a cloud session, however the line reads them:
+`CLAUDE_CODE_USER_EMAIL` and `CCR_SESSION_ACCOUNT_EMAIL`. The address itself counts
+with a word anywhere in the text.
 
 Scripts are found by a word match, not a parser: relative names with a script's
 extension, and `./name` with no extension, up to `MOST_SCRIPTS` per line, one level
@@ -119,9 +123,28 @@ leave the machine if the call sends them:
 - The address only in a WebFetch `prompt`. WebSearch, the browser tools and the
   local read tools are not checked.
 
-The address is the one the context hands the model, read through
-`$.session.identity()`, which answers a built-in with it. A plugin in the `user`
-tier is refused that op and is left off its chain.
+The address is the one the context hands the model, read as `contextEmail`
+from `$.session.identity()`. Where the context hands none, it is `email`.
+
+## Who reads the identity
+
+The engine answers `$.session.identity()` alike for every caller. This mod's hook
+on `session.identity` goes by the caller's tier:
+
+- `user`: refused. The call resolves with `deny`.
+- `builtin`: answered whole, this mod's own read included.
+- Any other: answered less `contextEmail`, pin or no pin. `email`, the pinned
+  account's, is left as it is.
+
+The field is left off that caller's own answer. A hook above this one still
+sees it on a built-in's read.
+
+Where the hook fails, its `.catch` refuses.
+
+By design, without `sec-default` a person's hook sits above this one and can see
+or answer the call, and with this mod off too a person's mod is answered. The
+address already reaches it at `prompt.context`. Under a pin, what it sees
+includes the organization's fields and the pinned `email`.
 
 ## What turns it off
 
@@ -130,5 +153,6 @@ tier is refused that op and is left off its chain.
   settings do not.
 - A server-side switch, read once per session.
 - A hook of an installed plugin, which sits above this one: on `tool.check` it
-  may overrule the refusal.
+  may overrule the refusal, and on `session.identity` it may answer in this
+  mod's place or, from a managed tier, continue past it.
 - A session where no hooks module loads, where `hooks/register.ts` does not run.
