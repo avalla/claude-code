@@ -8,7 +8,9 @@ The [implementation plan](IMPLEMENTATION-PLAN.md) (in Italian) describes five
 improvements, their dependencies, tests and acceptance criteria.
 
 For a short guide to running, installing and using the plugin, see the
-[quick start](docs/QUICKSTART.md).
+[quick start](docs/QUICKSTART.md). For why the plugin should improve context
+management and an estimate of its token costs and savings, see
+[Context and tokens](docs/CONTEXT-AND-TOKENS.md).
 
 ## Run
 
