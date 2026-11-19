@@ -7,6 +7,9 @@ separate from Claude Code's auto memory for reusable project knowledge.
 The [implementation plan](IMPLEMENTATION-PLAN.md) (in Italian) describes five
 improvements, their dependencies, tests and acceptance criteria.
 
+For a short guide to running, installing and using the plugin, see the
+[quick start](docs/GUIDA-RAPIDA.md) (in Italian).
+
 ## Run
 
 Function hooks are experimental and must be enabled for this process. From the
